@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Hockey Online: Supreme</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        [span_0](start_span)[span_1](start_span)[span_2](start_span)/* 元のゲームデザインを継承[span_0](end_span)[span_1](end_span)[span_2](end_span) */
+        body { margin: 0; background: #000; color: #fff; font-family: 'Arial Black', sans-serif; overflow: hidden; touch-action: none; }
+        canvas { display: block; }
+        #menu { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; box-sizing: border-box; }
+        h1 { color: #00ff88; font-size: 36px; margin-bottom: 20px; text-shadow: 0 0 20px #00ff88; }
+        .settings { margin-bottom: 20px; background: #111; padding: 15px; border-radius: 15px; border: 1px solid #333; }
+        .settings label { margin: 5px 10px; cursor: pointer; font-size: 14px; display: inline-block; }
+        .settings input[type="number"] { width: 50px; background: #222; color: #fff; border: 1px solid #444; border-radius: 5px; text-align: center; }
+        .mode-btn { font-size: 18px; padding: 15px; cursor: pointer; background: #222; color: #fff; border: 2px solid #444; border-radius: 50px; font-weight: bold; width: 300px; margin-top: 10px; }
+        .host-btn { background: #00ff88; color: #000; border: none; box-shadow: 0 0 20px #00ff88; }
+        .host-btn:disabled { background: #333; color: #666; box-shadow: none; }
+        #ui { position: fixed; top: 10px; width: 100%; display: flex; justify-content: center; gap: 50px; font-size: 50px; opacity: 0.5; pointer-events: none; z-index: 10; }
+        #status-msg { color: #00ff88; font-size: 18px; margin-bottom: 15px; padding: 10px; border: 1px solid #00ff88; border-radius: 10px; width: 300px; }
+        .skill-container { position: fixed; bottom: 10px; display: flex; flex-direction: column; gap: 5px; padding: 10px; pointer-events: none; z-index: 10; visibility: hidden; }
+        #p1-skills { left: 10px; color: #ff0055; }
+        #p2-skills { right: 10px; text-align: right; color: #00ccff; }
+        progress { width: 90px; height: 10px; appearance: none; }
+        progress::-webkit-progress-bar { background: #222; border-radius: 5px; }
+        #p1-skills progress::-webkit-progress-value { background: #ff0055; }
+        #p2-skills progress::-webkit-progress-value { background: #00ccff; }
+    </style>
+</head>
+<body>
+
+<div id="ui"><span id="s1">0</span> - <span id="s2">0</span></div>
+
+<div id="menu">
+    <h1>NEON HOCKEY ONLINE</h1>
+    <div id="status-msg">サーバーに接続中...</div>
+    
+    <div id="host-panel" style="display:none;">
+        <div class="settings">
+            <label><input type="checkbox" id="enableItems" checked> アイテム出現</label>
+            <label><input type="checkbox" id="enableSkills" checked> 能力（スキル）</label>
+            <label><input type="checkbox" id="enableLimit" checked> 移動制限あり</label>
+            <div style="margin-top: 10px;">
+                <label>勝利スコア: <input type="number" id="winScore" value="5" min="1"></label>
+            </div>
+        </div>
+        <button id="start-btn" class="mode-btn host-btn" disabled onclick="sendStart()">2Pを待っています...</button>
+    </div>
+
+    <div id="guest-panel" style="display:none;">
+        <div style="color:#00ccff; font-size: 22px; margin-bottom: 10px;">あなたは 2P です</div>
+        <div style="color:#aaa;">1Pが設定を選んで開始するのを待っています...</div>
+    </div>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="p1-skills" class="skill-container">Q:<progress id="p1-q" value="0" max="100"></progress></div>
+<div id="p2-skills" class="skill-container">I:<progress id="p2-q" value="0" max="100"></progress></div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// --- 通信設定 ---
+const ROOM_NAME = "neon-hockey-global-room-alpha"; // 固定の部屋名
+let peer, conn, isHost = false;
+let w, h, balls = [], p1, p2, items = [], gameActive = false;
+let score = [0, 0], targetWinScore = 5;
+let useItems = true, useSkills = true, useLimit = true;
+
+const P_RAD = 35; [span_3](start_span)//[span_3](end_span)
+const COOL = { Q: 250 }; // 簡易化
+
+// 自動マッチング開始
+function initNetwork() {
+    peer = new Peer(ROOM_NAME); // まず1Pとして部屋を作ってみる
+
+    peer.on('open', (id) => {
+        isHost = true;
+        document.getElementById('status-msg').innerText = "あなたは 1P です";
+        document.getElementById('host-panel').style.display = "block";
+        setupHost();
+    });
+
+    peer.on('error', (err) => {
+        if (err.type === 'unavailable-id') {
+            // 部屋が既にある＝2Pとして入る
+            isHost = false;
+            peer = new Peer(); // 自分はランダムIDで起動
+            peer.on('open', () => {
+                conn = peer.connect(ROOM_NAME);
+                setupGuest();
+            });
+        }
+    });
+}
+
+function setupHost() {
+    peer.on('connection', (c) => {
+        if (conn) { c.close(); return; } // 3人目以降は拒否
+        conn = c;
+        document.getElementById('start-btn').disabled = false;
+        document.getElementById('start-btn').innerText = "GAME START";
+        document.getElementById('status-msg').innerText = "2Pが参加しました！";
+        handleData();
+    });
+}
+
+function setupGuest() {
+    conn.on('open', () => {
+        document.getElementById('status-msg').innerText = "1Pに接続成功！";
+        document.getElementById('guest-panel').style.display = "block";
+        handleData();
+    });
+}
+
+function handleData() {
+    conn.on('data', (data) => {
+        if (data.type === 'start') {
+            useItems = data.s.items; useSkills = data.s.skills; useLimit = data.s.limit; targetWinScore = data.s.win;
+            startGame();
+        }
+        if (data.type === 'sync') {
+            if (isHost) {
+                p2.x = data.p2.x; p2.y = data.p2.y; p2.q = data.p2.q;
+            } else {
+                p1.x = data.p1.x; p1.y = data.p1.y; p1.q = data.p1.q;
+                balls = data.balls; items = data.items; score = data.score;
+            }
+        }
+    });
+}
+
+function sendStart() {
+    const s = {
+        items: document.getElementById('enableItems').checked,
+        skills: document.getElementById('enableSkills').checked,
+        limit: document.getElementById('enableLimit').checked,
+        win: parseInt(document.getElementById('winScore').value) || 5
+    };
+    conn.send({ type: 'start', s: s });
+    useItems = s.items; useSkills = s.skills; useLimit = s.limit; targetWinScore = s.win;
+    startGame();
+}
+
+[span_4](start_span)[span_5](start_span)[span_6](start_span)// --- ゲームロジック[span_4](end_span)[span_5](end_span)[span_6](end_span) ---
+function startGame() {
+    document.getElementById('menu').style.display = "none";
+    if (useSkills) {
+        document.getElementById('p1-skills').style.visibility = 'visible';
+        document.getElementById('p2-skills').style.visibility = 'visible';
+    }
+    w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight;
+    const base = { lx:0, ly:0, vx:0, vy:0, r:P_RAD, q:COOL.Q };
+    p1 = { ...base, x:100, y:h/2, color:'#ff0055' };
+    p2 = { ...base, x:w-100, y:h/2, color:'#00ccff' };
+    gameActive = true;
+    if (isHost) createBall();
+    update();
+}
+
+[span_7](start_span)function createBall() { //[span_7](end_span)
+    balls.push({ x:w/2, y:h/2, vx:7, vy:7, r:12 });
+}
+
+canvas.addEventListener('pointermove', e => {
+    if (!gameActive) return;
+    if (isHost) {
+        p1.x = e.clientX; p1.y = e.clientY;
+        if (useLimit && p1.x > w/2 - p1.r) p1.x = w/2 - p1.r;
+    } else {
+        p2.x = e.clientX; p2.y = e.clientY;
+        if (useLimit && p2.x < w/2 + p2.r) p2.x = w/2 + p2.r;
+    }
+});
+
+function update() {
+    if(!gameActive) return;
+    if (isHost) {
+        balls.forEach(b => {
+            b.x += b.vx; b.y += b.vy;
+            if(b.y < b.r || b.y > h - b.r) b.vy *= -1;
+            [p1, p2].forEach(p => {
+                if (Math.hypot(b.x-p.x, b.y-p.y) < b.r + p.r) {
+                    b.vx = (b.x - p.x) * 0.2; b.vy = (b.y - p.y) * 0.2;
+                    b.vx *= 1.1; // 加速
+                }
+            });
+            if (b.x < 0) { score[1]++; b.x = w/2; b.vx = 7; }
+            if (b.x > w) { score[0]++; b.x = w/2; b.vx = -7; }
+        });
+        if (p1.q < COOL.Q) p1.q++;
+        conn.send({ type: 'sync', p1: p1, balls: balls, items: items, score: score });
+    } else {
+        if (p2.q < COOL.Q) p2.q++;
+        conn.send({ type: 'sync', p2: p2 });
+    }
+    draw();
+    requestAnimationFrame(update);
+}
+
+[span_8](start_span)[span_9](start_span)function draw() { //[span_8](end_span)[span_9](end_span)
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,w,h);
+    if (useLimit) { ctx.strokeStyle = '#333'; ctx.strokeRect(w/2,0,1,h); }
+    [p1, p2].forEach(p => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+        ctx.fillStyle = p.color; ctx.fill();
+    });
+    balls.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill(); });
+    document.getElementById('s1').innerText = score[0]; document.getElementById('s2').innerText = score[1];
+    if(useSkills) {
+        document.getElementById('p1-q').value = (p1.q/COOL.Q)*100;
+        document.getElementById('p2-q').value = (p2.q/COOL.Q)*100;
+    }
+}
+
+initNetwork();
+</script>
+</body>
+</html>
